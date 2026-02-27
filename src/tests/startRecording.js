@@ -102,6 +102,8 @@ async function startRecording({ config, context, step, driver }) {
     // Start recording using executeAsync so we properly wait for
     // getDisplayMedia() to resolve before switching tabs.
     const recorderStarted = await driver.executeAsync((baseName, done) => {
+      let stream;
+      let recorder;
       const displayMediaOptions = {
         video: {
           displaySurface: "browser",
@@ -115,45 +117,58 @@ async function startRecording({ config, context, step, driver }) {
         surfaceSwitching: "include",
         monitorTypeSurfaces: "include",
       };
-
-      (async () => {
+      async function startCapture(displayMediaOptions) {
         try {
-          const stream = await navigator.mediaDevices.getDisplayMedia(
+          const captureStream = await navigator.mediaDevices.getDisplayMedia(
             displayMediaOptions
           );
-          if (!stream) {
-            done(false);
-            return;
-          }
-
-          window.recorder = new MediaRecorder(stream, { mimeType: "video/webm" });
-          let data = [];
-
-          window.recorder.ondataavailable = (event) => data.push(event.data);
-
-          // When recording stops, create a download link for the file
-          window.recorder.onstop = () => {
-            let blob = new Blob(data, { type: "video/webm" });
-            let url = URL.createObjectURL(blob);
-            let a = document.createElement("a");
-            a.style.display = "none";
-            a.href = url;
-            a.download = `${baseName}.webm`;
-            document.body.appendChild(a);
-            a.click();
-            setTimeout(() => {
-              document.body.removeChild(a);
-              window.URL.revokeObjectURL(url);
-            }, 100);
-          };
-
-          window.recorder.start();
-          done(true);
+          return captureStream;
         } catch (err) {
-          console.error(`Error starting recording: ${err}`);
+          console.error(`Error: ${err}`);
+          return null;
+        }
+      }
+      async function captureAndDownload() {
+        stream = await startCapture(displayMediaOptions);
+        if (stream) {
+          await recordStream(stream);
+        } else {
           done(false);
         }
-      })();
+        return stream;
+      }
+      async function recordStream(stream) {
+        window.recorder = new MediaRecorder(stream, { mimeType: "video/webm" }); // or 'video/mp4'
+        let data = [];
+
+        window.recorder.ondataavailable = (event) => data.push(event.data);
+        window.recorder.start();
+
+        // Signal that recording has started successfully.
+        // executeAsync resolves here; the rest continues in the browser.
+        done(true);
+
+        let stopped = new Promise((resolve, reject) => {
+          window.recorder.onstop = resolve;
+          window.recorder.onerror = (event) => reject(event.name);
+        });
+
+        await stopped;
+
+        let blob = new Blob(data, { type: "video/webm" });
+        let url = URL.createObjectURL(blob);
+        let a = document.createElement("a");
+        a.style.display = "none";
+        a.href = url;
+        a.download = `${baseName}.webm`;
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => {
+          document.body.removeChild(a);
+          window.URL.revokeObjectURL(url);
+        }, 100);
+      }
+      captureAndDownload();
     }, baseName);
 
     if (!recorderStarted) {
