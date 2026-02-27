@@ -1,4 +1,5 @@
 const { validate } = require("doc-detective-common");
+const { log } = require("../utils");
 const { instantiateCursor } = require("./moveTo");
 const path = require("path");
 const fs = require("fs");
@@ -178,6 +179,7 @@ async function startRecording({ config, context, step, driver }) {
         "Failed to start recording. getDisplayMedia may have been rejected. " +
         "On macOS, ensure Chrome has screen recording permission in " +
         "System Preferences > Privacy & Security > Screen Recording.";
+      log(config, "error", result.description);
       // Clean up: close the recorder tab and switch back
       await driver.closeWindow();
       await driver.switchToWindow(originalTab);
