@@ -99,10 +99,9 @@ async function startRecording({ config, context, step, driver }) {
     await driver.execute(() => (document.title = "RECORDER"));
     config.recording.tab = await driver.getWindowHandle();
 
-    // Start recording
-    const recorder = await driver.execute((baseName) => {
-      let stream;
-      let recorder;
+    // Start recording using executeAsync so we properly wait for
+    // getDisplayMedia() to resolve before switching tabs.
+    const recorderStarted = await driver.executeAsync((baseName, done) => {
       const displayMediaOptions = {
         video: {
           displaySurface: "browser",
@@ -116,53 +115,63 @@ async function startRecording({ config, context, step, driver }) {
         surfaceSwitching: "include",
         monitorTypeSurfaces: "include",
       };
-      async function startCapture(displayMediaOptions) {
+
+      (async () => {
         try {
-          const captureStream = await navigator.mediaDevices.getDisplayMedia(
+          const stream = await navigator.mediaDevices.getDisplayMedia(
             displayMediaOptions
           );
-          return captureStream;
+          if (!stream) {
+            done(false);
+            return;
+          }
+
+          window.recorder = new MediaRecorder(stream, { mimeType: "video/webm" });
+          let data = [];
+
+          window.recorder.ondataavailable = (event) => data.push(event.data);
+
+          // When recording stops, create a download link for the file
+          window.recorder.onstop = () => {
+            let blob = new Blob(data, { type: "video/webm" });
+            let url = URL.createObjectURL(blob);
+            let a = document.createElement("a");
+            a.style.display = "none";
+            a.href = url;
+            a.download = `${baseName}.webm`;
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(() => {
+              document.body.removeChild(a);
+              window.URL.revokeObjectURL(url);
+            }, 100);
+          };
+
+          window.recorder.start();
+          done(true);
         } catch (err) {
-          console.error(`Error: ${err}`);
-          return null;
+          console.error(`Error starting recording: ${err}`);
+          done(false);
         }
-      }
-      async function captureAndDownload() {
-        stream = await startCapture(displayMediaOptions);
-        if (stream) {
-          await recordStream(stream);
-        }
-        return stream;
-      }
-      async function recordStream(stream) {
-        window.recorder = new MediaRecorder(stream, { mimeType: "video/webm" }); // or 'video/mp4'
-        let data = [];
-
-        window.recorder.ondataavailable = (event) => data.push(event.data);
-        window.recorder.start();
-
-        let stopped = new Promise((resolve, reject) => {
-          window.recorder.onstop = resolve;
-          window.recorder.onerror = (event) => reject(event.name);
-        });
-
-        await stopped;
-
-        let blob = new Blob(data, { type: "video/webm" });
-        let url = URL.createObjectURL(blob);
-        let a = document.createElement("a");
-        a.style.display = "none";
-        a.href = url;
-        a.download = `${baseName}.webm`;
-        document.body.appendChild(a);
-        a.click();
-        setTimeout(() => {
-          document.body.removeChild(a);
-          window.URL.revokeObjectURL(url);
-        }, 100);
-      }
-      captureAndDownload();
+      })();
     }, baseName);
+
+    if (!recorderStarted) {
+      config.recording = null;
+      result.status = "FAIL";
+      result.description =
+        "Failed to start recording. getDisplayMedia may have been rejected. " +
+        "On macOS, ensure Chrome has screen recording permission in " +
+        "System Preferences > Privacy & Security > Screen Recording.";
+      // Clean up: close the recorder tab and switch back
+      await driver.closeWindow();
+      await driver.switchToWindow(originalTab);
+      await driver.execute((documentTitle) => {
+        document.title = documentTitle;
+      }, documentTitle);
+      return result;
+    }
+
     // Switch to original tab
     await driver.switchToWindow(originalTab);
     // Set document title back to original
